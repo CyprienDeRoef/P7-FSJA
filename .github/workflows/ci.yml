@@ -102,6 +102,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set lowercase owner
+        run: echo "OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -119,8 +122,8 @@ jobs:
           target: back
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/microcrm-back:latest
-            ghcr.io/${{ github.repository_owner }}/microcrm-back:${{ github.sha }}
+            ghcr.io/${{ env.OWNER }}/microcrm-back:latest
+            ghcr.io/${{ env.OWNER }}/microcrm-back:${{ github.sha }}
 
       - name: Build and push frontend image
         uses: docker/build-push-action@v6
@@ -130,5 +133,5 @@ jobs:
           target: front
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/microcrm-front:latest
-            ghcr.io/${{ github.repository_owner }}/microcrm-front:${{ github.sha }}
+            ghcr.io/${{ env.OWNER }}/microcrm-front:latest
+            ghcr.io/${{ env.OWNER }}/microcrm-front:${{ github.sha }}
