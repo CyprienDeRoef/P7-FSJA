@@ -3,6 +3,8 @@ plugins {
 	id 'org.springframework.boot' version '3.2.5'
 	id 'io.spring.dependency-management' version '1.1.4'
 	id 'com.adarshr.test-logger' version '4.0.0'
+	id 'jacoco'
+	id 'org.sonarqube' version '5.1.0.4882'
 }
 
 group = 'com.openclassroom.devops.orion'
@@ -28,4 +30,20 @@ dependencies {
 
 test {
     useJUnitPlatform()
+    finalizedBy jacocoTestReport
+}
+
+jacocoTestReport {
+    dependsOn test
+    reports {
+        xml.required = true // requis par SonarQube
+    }
+}
+
+sonar {
+    properties {
+        // Remplacer ces valeurs par les vôtres depuis sonarcloud.io
+        property 'sonar.projectKey', 'YOUR_SONAR_PROJECT_KEY'
+        property 'sonar.organization', 'YOUR_SONAR_ORGANIZATION'
+    }
 }
