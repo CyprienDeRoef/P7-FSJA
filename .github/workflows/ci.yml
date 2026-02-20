@@ -1,4 +1,4 @@
-name: CI
+name: CI/CD
 
 on:
   push:
@@ -82,3 +82,53 @@ jobs:
         with:
           name: frontend-test-results
           path: front/coverage/
+
+  # ──────────────────────────────────────────
+  # Job 3 : publication des images Docker (CD)
+  # S'exécute uniquement sur push vers main,
+  # après que les deux jobs de tests ont réussi.
+  # ──────────────────────────────────────────
+  publish:
+    name: Publish Docker images
+    runs-on: ubuntu-latest
+    needs: [test-back, test-front]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    permissions:
+      contents: read
+      packages: write # requis pour pousser vers ghcr.io
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          # GITHUB_TOKEN est fourni automatiquement par GitHub Actions
+          # aucun secret manuel à créer
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          target: back
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/microcrm-back:latest
+            ghcr.io/${{ github.repository_owner }}/microcrm-back:${{ github.sha }}
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          target: front
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/microcrm-front:latest
+            ghcr.io/${{ github.repository_owner }}/microcrm-front:${{ github.sha }}

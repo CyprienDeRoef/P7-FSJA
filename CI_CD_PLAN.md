@@ -60,28 +60,44 @@ SonarQube Cloud est intégré dans le pipeline CI pour analyser statiquement le 
 
 Le `Dockerfile` à la racine du projet utilise un **build multi-étapes** :
 
-| Étape         | Rôle                                                                                                     |
-| ------------- | -------------------------------------------------------------------------------------------------------- |
-| `front-build` | Compile l'application Angular (`npm ci` + `ng build --optimization`)                                     |
-| `back-build`  | Compile l'application Spring Boot (`gradle build`)                                                       |
-| `front`       | Image Alpine légère avec Caddy pour servir les fichiers statiques Angular                                |
-| `back`        | Image Alpine légère avec OpenJDK 21 pour exécuter le JAR Spring Boot                                     |
-| `standalone`  | Image combinée utilisant Supervisord pour lancer les deux services (front + back) dans un seul conteneur |
+| Étape         | Rôle                                                                 | Image de base                   |
+| ------------- | -------------------------------------------------------------------- | ------------------------------- |
+| `front-build` | Compile l'application Angular (`npm ci` + `ng build --optimization`) | `node:20-alpine`                |
+| `back-build`  | Compile l'application Spring Boot (`gradle build`)                   | `gradle:8.7-jdk17`              |
+| `front`       | Sert les fichiers statiques Angular via Caddy                        | `caddy:2-alpine`                |
+| `back`        | Exécute le JAR Spring Boot                                           | `eclipse-temurin:17-jre-alpine` |
+| `standalone`  | Lance les deux services dans un seul conteneur via Supervisord       | `alpine:3.20`                   |
+
+**Justification des images de base :**
+
+| Image                           | Raison du choix                                                                                                                                        |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `node:20-alpine`                | Version LTS pinned, base Alpine minimale, distribution officielle Node.js                                                                              |
+| `gradle:8.7-jdk17`              | Image officielle Gradle, JDK 17 = version cible du projet                                                                                              |
+| `caddy:2-alpine`                | Distribution officielle Caddy, plus légère qu'Alpine + apk, pas d'outil inutile                                                                        |
+| `eclipse-temurin:17-jre-alpine` | Distribution OpenJDK officielle (Adoptium/Eclipse Foundation), JRE uniquement (pas JDK complet), Alpine minimal, cohérent avec JDK 17 utilisé en build |
 
 L'approche multi-étapes évite d'embarquer les outils de build (Node, Gradle, JDK complet) dans l'image finale, réduisant ainsi sa taille et sa surface d'attaque.
 
 ### Rôle de docker-compose
 
-Un fichier `docker-compose.yml` (à créer) permettrait de :
+Le fichier `docker-compose.yml` à la racine du projet permet de :
 
-- Démarrer les services `front` et `back` séparément avec un seul `docker-compose up`.
-- Configurer facilement le réseau entre les conteneurs et les variables d'environnement.
-- Simplifier les tests locaux de l'image conteneurisée.
+- Démarrer les services `front` (port 80) et `back` (port 8080) séparément avec un seul `docker-compose up`.
+- Chaque service est construit à partir d'une étape cible (`target`) du Dockerfile multi-étapes.
+- L'application Angular communique avec le backend via `http://localhost:8080` — cela fonctionne naturellement car le code Angular s'exécute dans le navigateur du client, qui accède directement au port 8080 exposé sur la machine hôte.
 
 ### Stratégie de déploiement
 
-1. **Publication d'images** : à chaque merge sur `main`, le pipeline CI/CD construit les images Docker (`front`, `back`, `standalone`) et les publie sur un registre (ex. Docker Hub ou GitHub Container Registry) avec le tag `latest` et un tag versionné.
-2. **Déploiement automatisé** : une étape de déploiement (CD) peut ensuite pousser la nouvelle image vers l'environnement cible (serveur VPS, cloud) en exécutant un `docker pull` + `docker run` ou en déclenchant un webhook.
+À chaque merge sur `main`, un job CD (`publish`) se déclenche **uniquement après la réussite des deux jobs de tests**. Il construit les images Docker `front` et `back` et les publie sur **GitHub Container Registry (ghcr.io)**.
+
+Chaque image est taguée avec :
+- `latest` — pour récupérer facilement la dernière version stable.
+- le SHA du commit (`github.sha`) — pour garantir la traçabilité et permettre un rollback précis.
+
+Les images publiées sont ensuite disponibles à :
+- `ghcr.io/<owner>/microcrm-back:latest`
+- `ghcr.io/<owner>/microcrm-front:latest`
 
 ---
 
@@ -110,3 +126,18 @@ Avant d'utiliser le pipeline, deux valeurs doivent être renseignées :
 
 1. Dans `back/build.gradle`, remplacer `YOUR_SONAR_PROJECT_KEY` et `YOUR_SONAR_ORGANIZATION` par les valeurs de votre projet sur [sonarcloud.io](https://sonarcloud.io).
 2. Dans les **Secrets** du dépôt GitHub (`Settings > Secrets and variables > Actions`), créer un secret `SONAR_TOKEN` avec le token généré depuis SonarCloud.
+
+---
+
+## 5. Commandes clés du projet
+
+| Commande | Objectif | Définie dans | Exécutée à |
+|----------|----------|--------------|------------|
+| `./gradlew test` | Lance tous les tests JUnit du backend | `back/build.gradle` (bloc `test`) | CI (`test-back`), local |
+| `./gradlew jacocoTestReport` | Génère le rapport de couverture XML pour SonarQube | `back/build.gradle` (bloc `jacocoTestReport`) | CI (`test-back`) |
+| `./gradlew sonar` | Envoie l'analyse statique vers SonarCloud | `back/build.gradle` (bloc `sonar`) | CI (`test-back`) |
+| `npx ng test --watch=false --browsers=ChromeHeadlessNoSandbox` | Lance les tests Karma/Jasmine du frontend sans navigateur graphique | `front/package.json` (script `test`) | CI (`test-front`), local |
+| `npm ci` | Installe les dépendances Node.js depuis le lockfile (reproductible) | `front/package-lock.json` | CI (`test-front`), build Docker |
+| `docker build --target back` | Construit uniquement l'image du backend | `Dockerfile` (étape `back`) | CI/CD (`publish`), local |
+| `docker build --target front` | Construit uniquement l'image du frontend | `Dockerfile` (étape `front`) | CI/CD (`publish`), local |
+| `docker compose up` | Lance les services `front` et `back` localement | `docker-compose.yml` | Local uniquement |
