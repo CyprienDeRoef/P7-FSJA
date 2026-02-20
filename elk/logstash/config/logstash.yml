@@ -1,0 +1,5 @@
+# Configuration minimale de Logstash
+http.host: "0.0.0.0"
+
+# Désactive la télémétrie vers Elastic Cloud (inutile en local)
+xpack.monitoring.enabled: false

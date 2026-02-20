@@ -1,0 +1,123 @@
+# ══════════════════════════════════════════════════════════════════════
+#  URLs une fois démarré :
+#    Front-end  → http://localhost:80
+#    Back-end   → http://localhost:8080
+#    Kibana     → http://localhost:5601
+#    ES API     → http://localhost:9200
+# ══════════════════════════════════════════════════════════════════════
+
+services:
+
+  # ── Correctif kernel requis par Elasticsearch ──────────────────────
+  # Elasticsearch exige vm.max_map_count >= 262144.
+  # Ce conteneur temporaire applique le paramètre au démarrage.
+  setup-vm:
+    image: busybox
+    privileged: true
+    command: ["sysctl", "-w", "vm.max_map_count=262144"]
+
+  # ── Elasticsearch ──────────────────────────────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    environment:
+      - discovery.type=single-node      # Nœud unique (développement local)
+      - xpack.security.enabled=false    # Désactive l'authentification en local
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m # Limite la heap JVM à 512 Mo
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - elk
+    depends_on:
+      - setup-vm
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -s http://localhost:9200/_cluster/health | grep -E '\"status\":\"(green|yellow)\"'"
+        ]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ── Logstash ───────────────────────────────────────────────────────
+  # Reçoit les logs JSON du back-end via TCP (port 5000),
+  # les transforme et les envoie vers Elasticsearch.
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.13.4
+    volumes:
+      - ./elk/logstash/pipeline:/usr/share/logstash/pipeline:ro
+      - ./elk/logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+    ports:
+      - "5000:5000/tcp"   # Entrée TCP pour les logs Spring Boot
+    environment:
+      - LS_JAVA_OPTS=-Xms256m -Xmx256m
+    networks:
+      - elk
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl --silent --fail http://localhost:9600"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ── Kibana ─────────────────────────────────────────────────────────
+  # Interface de visualisation — http://localhost:5601
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.4
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    networks:
+      - elk
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  # ── Back-end Spring Boot ───────────────────────────────────────────
+  back:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: back
+    ports:
+      - "8080:8080"
+    environment:
+      # Active le profil ELK : active l'appender JSON + TCP dans logback-spring.xml
+      - SPRING_PROFILES_ACTIVE=elk
+      # Nom du service Logstash sur le réseau Docker (résolution DNS interne)
+      - LOGSTASH_HOST=logstash
+    networks:
+      - app
+      - elk
+    depends_on:
+      - logstash   # Logstash doit être démarré (l'appender reconnecte automatiquement)
+
+  # ── Front-end Angular / Caddy ──────────────────────────────────────
+  front:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: front
+    ports:
+      - "80:80"
+    networks:
+      - app
+    depends_on:
+      - back
+
+networks:
+  app:
+    driver: bridge   # Réseau interne front ↔ back
+  elk:
+    driver: bridge   # Réseau interne back ↔ Logstash ↔ Elasticsearch ↔ Kibana
+
+volumes:
+  elasticsearch_data:
+    driver: local    # Persistance des données Elasticsearch entre les redémarrages

@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <!--
+        Appender texte standard – utilisé par défaut (dev local sans ELK).
+    -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!--
+        Appender JSON vers la console – activé avec le profil "elk".
+        Chaque ligne = un objet JSON, directement lisible par Logstash.
+    -->
+    <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <customFields>{"app":"microcrm-back","env":"docker"}</customFields>
+        </encoder>
+    </appender>
+
+    <!--
+        Appender TCP vers Logstash – activé avec le profil "elk".
+        L'hôte est injecté via la variable d'environnement LOGSTASH_HOST
+        (valeur par défaut : localhost pour les tests hors Docker).
+    -->
+    <appender name="LOGSTASH" class="net.logstash.logback.appender.LogstashTcpSocketAppender">
+        <destination>${LOGSTASH_HOST:-localhost}:5000</destination>
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <customFields>{"app":"microcrm-back","env":"docker"}</customFields>
+        </encoder>
+        <!-- Reconnexion automatique si Logstash redémarre -->
+        <reconnectionDelay>10 seconds</reconnectionDelay>
+        <keepAliveDuration>5 minutes</keepAliveDuration>
+    </appender>
+
+    <!-- ── Profil par défaut : logs lisibles en console ── -->
+    <springProfile name="default,!elk">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <!-- ── Profil ELK : JSON console + envoi TCP à Logstash ── -->
+    <springProfile name="elk">
+        <logger name="com.openclassroom" level="DEBUG"/>
+        <root level="INFO">
+            <appender-ref ref="CONSOLE_JSON"/>
+            <appender-ref ref="LOGSTASH"/>
+        </root>
+    </springProfile>
+
+</configuration>
