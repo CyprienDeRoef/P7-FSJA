@@ -44,6 +44,6 @@ sonar {
     properties {
         // Remplacer ces valeurs par les vôtres depuis sonarcloud.io
         property 'sonar.projectKey', 'CyprienDeRoef_P7-FSJA'
-        property 'sonar.organization', 'CyprienDeRoef'
+        property 'sonar.organization', 'cyprienderoef'
     }
 }
