@@ -43,7 +43,7 @@ jacocoTestReport {
 sonar {
     properties {
         // Remplacer ces valeurs par les vôtres depuis sonarcloud.io
-        property 'sonar.projectKey', 'YOUR_SONAR_PROJECT_KEY'
-        property 'sonar.organization', 'YOUR_SONAR_ORGANIZATION'
+        property 'sonar.projectKey', 'CyprienDeRoef_P7-FSJA'
+        property 'sonar.organization', 'CyprienDeRoef'
     }
 }
