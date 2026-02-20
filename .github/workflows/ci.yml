@@ -28,6 +28,9 @@ jobs:
           distribution: "temurin"
           cache: "gradle"
 
+      - name: Make gradlew executable
+        run: chmod +x back/gradlew
+
       - name: Run tests & generate coverage report
         working-directory: back
         run: ./gradlew test jacocoTestReport
