@@ -92,10 +92,12 @@ Le fichier `docker-compose.yml` à la racine du projet permet de :
 À chaque merge sur `main`, un job CD (`publish`) se déclenche **uniquement après la réussite des deux jobs de tests**. Il construit les images Docker `front` et `back` et les publie sur **GitHub Container Registry (ghcr.io)**.
 
 Chaque image est taguée avec :
+
 - `latest` — pour récupérer facilement la dernière version stable.
 - le SHA du commit (`github.sha`) — pour garantir la traçabilité et permettre un rollback précis.
 
 Les images publiées sont ensuite disponibles à :
+
 - `ghcr.io/<owner>/microcrm-back:latest`
 - `ghcr.io/<owner>/microcrm-front:latest`
 
@@ -131,13 +133,13 @@ Avant d'utiliser le pipeline, deux valeurs doivent être renseignées :
 
 ## 5. Commandes clés du projet
 
-| Commande | Objectif | Définie dans | Exécutée à |
-|----------|----------|--------------|------------|
-| `./gradlew test` | Lance tous les tests JUnit du backend | `back/build.gradle` (bloc `test`) | CI (`test-back`), local |
-| `./gradlew jacocoTestReport` | Génère le rapport de couverture XML pour SonarQube | `back/build.gradle` (bloc `jacocoTestReport`) | CI (`test-back`) |
-| `./gradlew sonar` | Envoie l'analyse statique vers SonarCloud | `back/build.gradle` (bloc `sonar`) | CI (`test-back`) |
-| `npx ng test --watch=false --browsers=ChromeHeadlessNoSandbox` | Lance les tests Karma/Jasmine du frontend sans navigateur graphique | `front/package.json` (script `test`) | CI (`test-front`), local |
-| `npm ci` | Installe les dépendances Node.js depuis le lockfile (reproductible) | `front/package-lock.json` | CI (`test-front`), build Docker |
-| `docker build --target back` | Construit uniquement l'image du backend | `Dockerfile` (étape `back`) | CI/CD (`publish`), local |
-| `docker build --target front` | Construit uniquement l'image du frontend | `Dockerfile` (étape `front`) | CI/CD (`publish`), local |
-| `docker compose up` | Lance les services `front` et `back` localement | `docker-compose.yml` | Local uniquement |
+| Commande                                                       | Objectif                                                            | Définie dans                                  | Exécutée à                      |
+| -------------------------------------------------------------- | ------------------------------------------------------------------- | --------------------------------------------- | ------------------------------- |
+| `./gradlew test`                                               | Lance tous les tests JUnit du backend                               | `back/build.gradle` (bloc `test`)             | CI (`test-back`), local         |
+| `./gradlew jacocoTestReport`                                   | Génère le rapport de couverture XML pour SonarQube                  | `back/build.gradle` (bloc `jacocoTestReport`) | CI (`test-back`)                |
+| `./gradlew sonar`                                              | Envoie l'analyse statique vers SonarCloud                           | `back/build.gradle` (bloc `sonar`)            | CI (`test-back`)                |
+| `npx ng test --watch=false --browsers=ChromeHeadlessNoSandbox` | Lance les tests Karma/Jasmine du frontend sans navigateur graphique | `front/package.json` (script `test`)          | CI (`test-front`), local        |
+| `npm ci`                                                       | Installe les dépendances Node.js depuis le lockfile (reproductible) | `front/package-lock.json`                     | CI (`test-front`), build Docker |
+| `docker build --target back`                                   | Construit uniquement l'image du backend                             | `Dockerfile` (étape `back`)                   | CI/CD (`publish`), local        |
+| `docker build --target front`                                  | Construit uniquement l'image du frontend                            | `Dockerfile` (étape `front`)                  | CI/CD (`publish`), local        |
+| `docker compose up`                                            | Lance les services `front` et `back` localement                     | `docker-compose.yml`                          | Local uniquement                |
