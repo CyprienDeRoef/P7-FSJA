@@ -1,0 +1,388 @@
+﻿DOCUMENTATION TECHNIQUE - MicroCRM
+Projet 7 : Mettre en oeuvre l'integration et le deploiement continu d'une application Full-Stack
+
+============================================================
+PAGE DE TITRE
+============================================================
+
+Titre du document : Documentation technique - MicroCRM
+Auteur             : Cyprien
+Option choisie     : Option B (Scenario Orion)
+Date               : Fevrier 2026
+
+============================================================
+1. INTRODUCTION
+============================================================
+
+1.1 Contexte du projet
+-----------------------
+MicroCRM est une application de gestion de contacts et d'organisations (CRM simplifie).
+Elle est constituee d'un backend Spring Boot 3 (Java 17) et d'un frontend Angular 17,
+deployes via Docker dans un pipeline CI/CD sur GitHub Actions.
+
+1.2 Objectifs de l'industrialisation
+--------------------------------------
+- Automatiser la compilation, les tests et la publication des images Docker.
+- Garantir la qualite du code (SonarCloud, JaCoCo) a chaque integration.
+- Assurer la tracabilite des deploiements (tag SHA sur chaque image).
+- Permettre un rollback rapide en cas de regression.
+- Centraliser les logs applicatifs via la stack ELK.
+
+1.3 Technologies principales
+-----------------------------
+  Backend          : Java 17, Spring Boot 3, Gradle, H2 (in-memory)
+  Frontend         : Angular 17, TypeScript
+  Tests backend    : JUnit 5, JaCoCo
+  Tests frontend   : Karma, Jasmine
+  Conteneurisation : Docker (multi-stage), Docker Compose
+  Reverse proxy    : Caddy 2
+  CI/CD            : GitHub Actions
+  Qualite          : SonarCloud + JaCoCo
+  Monitoring       : ELK Stack (Elasticsearch, Logstash, Kibana)
+
+1.4 Presentation du pipeline CI/CD
+------------------------------------
+Le pipeline est defini dans .github/workflows/ci.yml.
+Il comprend 3 jobs :
+
+  test-back  --+
+               +--> publish (sur merge main uniquement)
+  test-front --+
+
+- test-back  : compile, tests JUnit, JaCoCo, SonarCloud.
+- test-front : npm ci, tests Karma (ChromeHeadless).
+- publish    : build images Docker front + back, push sur GHCR (ghcr.io).
+
+
+============================================================
+2. ETAPES DE MISE EN OEUVRE DU PIPELINE CI/CD
+============================================================
+
+2.1 Structure du pipeline
+--------------------------
+Etapes principales :
+  1. Checkout (fetch-depth: 0 pour SonarCloud)
+  2. Backend : ./gradlew test jacocoTestReport sonar
+  3. Frontend : npm ci + ng test --watch=false --browsers=ChromeHeadlessNoSandbox
+  4. (si main) Build images Docker multi-stage + push GHCR
+
+Ordre d'execution :
+  - test-back et test-front s'executent en parallele.
+  - publish requiert la reussite des deux (needs: [test-back, test-front]).
+
+Justification des actions GitHub :
+  - actions/checkout@v4 + fetch-depth:0   : historique complet requis par SonarCloud
+  - actions/setup-java@v4 + cache:gradle  : cache du repertoire .gradle entre les runs
+  - actions/setup-node@v4 + cache:npm     : cache node_modules via package-lock.json
+  - docker/build-push-action              : build + push images sur GHCR
+  - actions/upload-artifact@v4            : publie les rapports JaCoCo dans les artifacts
+
+2.2 Scripts d'automatisation
+------------------------------
+  ./gradlew test                                   -> Tests JUnit backend (CI + local)
+  ./gradlew jacocoTestReport                       -> Rapport couverture XML (CI test-back)
+  ./gradlew sonar                                  -> Analyse SonarCloud (CI test-back)
+  npm ci                                           -> Install deps desde lockfile (CI + Docker)
+  npx ng test --watch=false --browsers=ChromeHNS  -> Tests Angular sans interface (CI)
+  docker build --target back                       -> Image backend (CI publish)
+  docker build --target front                      -> Image frontend (CI publish)
+  docker compose up                                -> Lance front + back localement
+
+2.3 Reproductibilite
+---------------------
+Relancer le pipeline :
+  - Push sur n'importe quelle branche -> test-back + test-front.
+  - Merge sur main -> test-back + test-front + publish.
+
+Gestion des secrets :
+  - SONAR_TOKEN : GitHub Secrets (Settings > Secrets and variables > Actions).
+  - GITHUB_TOKEN : fourni automatiquement par GitHub Actions.
+  - Aucun secret n'est commite dans le code source.
+
+
+============================================================
+3. PLAN DE CONTENEURISATION ET DE DEPLOIEMENT
+============================================================
+
+3.1 Dockerfiles
+----------------
+Build multi-etapes (5 etapes) :
+
+  front-build  | node:20-alpine                | npm ci + ng build --optimization
+  back-build   | gradle:8.7-jdk17              | gradle build (JAR)
+  front        | caddy:2-alpine                | Sert les fichiers statiques Angular
+  back         | eclipse-temurin:17-jre-alpine | Execute le JAR Spring Boot
+  standalone   | alpine:3.20                   | Lance front + back via Supervisord
+
+Pourquoi le multi-stage : evite d'embarquer les outils de build (Node, Gradle, JDK)
+dans l'image finale -> taille reduite + surface d'attaque minimisee.
+
+Ports exposes :
+  - 80   : frontend (Caddy)
+  - 8080 : backend (Spring Boot)
+
+3.2 docker-compose.yml
+-----------------------
+Services :
+  - back  : target back, port 8080:8080
+  - front : target front, port 80:80, depends_on: back
+
+Lancement local :
+  docker compose up --build
+
+Plan de deploiement (serveur cible) :
+  1. echo $GHCR_PAT | docker login ghcr.io -u <user> --password-stdin
+  2. docker compose pull
+  3. docker compose up -d
+  4. docker compose ps && docker compose logs --tail=50
+
+Rollback vers un SHA stable :
+  docker pull ghcr.io/<owner>/microcrm-back:<STABLE_SHA>
+  docker pull ghcr.io/<owner>/microcrm-front:<STABLE_SHA>
+  docker compose up -d
+
+
+============================================================
+4. PLAN DE TESTING PERIODIQUE
+============================================================
+
+4.1 Types de tests automatises
+--------------------------------
+Tests unitaires backend (JUnit 5) :
+  - MicroCRMApplicationTests        : smoke test (demarrage contexte Spring)
+  - PersonRepositoryIntegrationTest : test integration JPA (recherche par e-mail)
+
+Tests unitaires frontend (Jest) :
+  - Composants Angular (*.spec.ts)
+  - Services : organization.service.spec.ts, person.service.spec.ts
+
+Analyse statique / securite :
+  - SonarCloud : vulnerabilites, bugs, code smells, couverture
+  - JaCoCo     : rapport de couverture consomme par SonarCloud
+
+4.2 Frequence d'execution
+--------------------------
+  Push sur toute branche  -> test-back + test-front
+  Pull Request vers main  -> test-back + test-front + SonarCloud
+  Merge sur main          -> test-back + test-front + publish
+
+Criteres de reussite :
+  - Tous les tests JUnit et Karma passent (exit code 0).
+  - SonarCloud Quality Gate valide.
+  - publish ne se declenche que si les deux jobs de tests reussissent.
+
+4.3 Objectifs des tests
+------------------------
+  - Non-regression  : detecter toute regression introduite par un commit.
+  - Qualite         : mesurer la couverture et les mauvaises pratiques.
+  - Securite        : analyser statiquement le code (vulnerabilites).
+  - Deploiement     : garantir que seul du code valide atteint main.
+
+
+============================================================
+5. PLAN DE SECURITE
+============================================================
+
+5.1 Resultats SonarCloud
+-------------------------
+Couverture backend (JaCoCo) : 56,3 %  (seuil cible : >= 70 %)
+
+Categories surveillees :
+  - Vulnerabilites : injections, exposition de donnees sensibles
+  - Bugs           : NullPointerException, gestion exceptions
+  - Code Smells    : methodes trop longues, code duplique
+  - Couverture     : % du code couvert par les tests
+
+5.2 Analyse des risques
+------------------------
+  Secret expose dans le code     -> GitHub Secrets uniquement
+  Dependance obsolete (npm)      -> npm ci + npm audit en CI
+  Dependance obsolete (Gradle)   -> versions fixees dans build.gradle
+  Image Docker vulnerable        -> tags de version explicites + MAJ reguliere
+  Rollback impossible            -> tag SHA sur chaque image GHCR
+  Regression non detectee        -> double barriere test-back + test-front
+
+5.3 Plan d'action / Remediation
+---------------------------------
+Immediat :
+  - SONAR_TOKEN et GITHUB_TOKEN dans GitHub Secrets uniquement.
+  - npm ci (jamais npm install) en CI.
+
+Court terme :
+  - Atteindre 70 % de couverture backend.
+  - Activer Dependabot sur le depot.
+  - Ajouter npm audit --audit-level=critical dans test-front.
+
+Long terme :
+  - Tests end-to-end (Cypress ou Playwright).
+  - Cache BuildKit en CI (cache-from: type=gha).
+  - Migration H2 -> PostgreSQL pour persistance en production.
+
+
+============================================================
+6. MONITORING, METRIQUES & KPI
+============================================================
+
+6.1 Metriques DORA (mesures sur >= 3 runs)
+--------------------------------------------
+  Deployment Frequency  | ~1h          | Elite  | Chaque merge main = deploiement auto
+  Lead Time for Changes | ~6-10 min    | Elite  | test-back || test-front + publish
+  Change Failure Rate   | ~10 %        | High   | Double barriere tests + SonarCloud
+  Time to Restore       | ~15-30 min   | Medium | Pas de rollback automatise
+
+Methode de calcul :
+  - Deployment Frequency  : nb merges main / periode
+  - Lead Time             : 1er commit -> image publiee sur GHCR
+  - Change Failure Rate   : pipelines ayant necessite un correctif / total pipelines
+  - Time to Restore       : detection ELK pic erreurs -> retour en prod
+
+6.2 KPI personnalises
+----------------------
+  Duree job test-back        | GitHub Actions | ~3-5 min  | < 5 min  |
+  Duree job test-front       | GitHub Actions | ~2-4 min  | < 4 min  |
+  Duree job publish          | GitHub Actions | ~2-4 min  | < 5 min  |
+  Couverture backend         | JaCoCo+Sonar   | 56,3 %    | >= 70 %  |
+  Taux erreurs (ELK)         | Kibana         | a relever | < 1 % logs|
+
+6.3 Analyse synthetique
+------------------------
+Points forts :
+  - Lead Time Elite : retour developpeur < 10 min.
+  - Parallelisation des tests : pipeline plus rapide.
+  - Tracabilite : images Docker taguees avec le SHA du commit.
+
+Points a ameliorer :
+  - Time to Restore (Medium) : pas de rollback automatique.
+  - Change Failure Rate      : renforcer couverture (>= 80 %) + tests E2E.
+  - Observabilite incomplete : logs Caddy non envoyes vers ELK.
+  - Pas de cache Docker en CI : job publish rebuild integralement.
+
+Stack ELK :
+  docker compose -f docker-compose.elk.yml up
+  -> Kibana : http://localhost:5601
+  -> Index : microcrm-logs-*
+  -> Logs Spring Boot via logback-spring.xml -> Logstash -> Elasticsearch
+
+
+============================================================
+7. PLAN DE SAUVEGARDE DES DONNEES
+============================================================
+
+7.1 Ce qui doit etre sauvegarde
+---------------------------------
+  Base H2 (si fichier active)          | ./data/              | Haute   |
+  application.properties               | back/src/main/res/   | Haute   |
+  docker-compose.yml                   | racine               | Haute   |
+  Dockerfile                           | racine               | Haute   |
+  misc/docker/Caddyfile                | misc/docker/         | Moyenne |
+  elk/logstash/pipeline/logstash.conf  | elk/logstash/        | Moyenne |
+  Secrets CI                           | GitHub Secrets       | Haute   |
+
+Note : H2 fonctionne en memoire par defaut -> donnees perdues au redemarrage.
+Aucune sauvegarde de donnees n'est necessaire dans cet etat.
+
+7.2 Procedure de sauvegarde
+-----------------------------
+Code source et config :
+  -> Git (depot GitHub) : chaque push est une sauvegarde. Rien a faire de plus.
+
+Fichier H2 (si active) :
+  cp ./data/microcrm.mv.db ./backups/microcrm-$(date +%Y%m%d).mv.db
+  find ./backups/ -name "microcrm-*.mv.db" -mtime +7 -delete
+  Frequence : quotidienne (cron), retention 7 jours.
+
+Secrets :
+  Documentation dans un coffre (Bitwarden, HashiCorp Vault). MAJ a chaque rotation.
+
+7.3 Procedure de restauration
+-------------------------------
+Regression apres deploiement :
+  1. Identifier le SHA stable (GitHub Actions ou historique GHCR).
+  2. docker pull ghcr.io/<owner>/microcrm-back:<SHA>
+     docker pull ghcr.io/<owner>/microcrm-front:<SHA>
+  3. docker compose up -d
+  4. docker compose logs --tail=50
+
+Perte de configuration :
+  git checkout <commit-stable> -- docker-compose.yml Dockerfile
+  docker compose up --build
+
+Limitations :
+  - H2 in-memory : donnees perdues a chaque redemarrage (par conception).
+  - Pas de rollback automatise : intervention manuelle requise.
+
+
+============================================================
+8. PLAN DE MISE A JOUR
+============================================================
+
+8.1 Mise a jour de l'application
+----------------------------------
+Flux :
+  feature/* ou fix/* -> CI (tests + SonarCloud) -> PR -> merge main -> publish -> serveur
+
+Backend (Gradle / Java) :
+  - Versions fixees dans build.gradle.
+  - Detection MAJ : ./gradlew dependencyUpdates
+  - Toujours via branche dediee + PR + CI.
+  - JDK : aligner sourceCompatibility ET image Dockerfile (gradle:8.7-jdk17).
+
+Frontend (npm / Angular) :
+  - npm ci (lockfile strict) en CI.
+  - Mises a jour mineures : npm update + commit package-lock.json.
+  - Mises a jour majeures : ng update @angular/core @angular/cli.
+  - Audit : npm audit --audit-level=critical.
+
+Images Docker de base :
+  node:20-alpine                -> node:22-alpine (prochaine LTS)
+  gradle:8.7-jdk17              -> aligner avec build.gradle
+  caddy:2-alpine                -> MAJ a chaque release securite
+  eclipse-temurin:17-jre-alpine -> synchroniser avec version JDK build
+  alpine:3.20                   -> MAJ release LTS Alpine
+
+8.2 Mise a jour du pipeline CI/CD
+-----------------------------------
+  - Versions des actions GitHub fixees (ne pas utiliser @latest).
+  - Surveiller les releases majeures de checkout, setup-java, setup-node.
+  - Verifier compatibilite plugins Gradle (sonarqube, jacoco) apres MAJ.
+  - Renouveler SONAR_TOKEN avant expiration.
+
+8.3 Frequence & bonnes pratiques
+----------------------------------
+  1. Tags de version explicites dans Dockerfile (jamais latest).
+  2. Mises a jour dans une branche dediee (CI valide avant merge).
+  3. Activer Dependabot (alertes securite automatiques).
+  4. SonarCloud apres chaque MAJ majeure.
+  5. Tag SHA des images en production (rollback < 5 min).
+
+Impact sur les KPI DORA :
+  - Change Failure Rate : MAJ non testee = risque regression -> CI obligatoire.
+  - Time to Restore     : tag SHA -> rollback en < 5 min.
+  - Lead Time           : MAJ mineures sans impact (caches Gradle/npm actifs).
+
+
+============================================================
+9. CONCLUSION
+============================================================
+
+Resume des ameliorations apportees :
+  - Pipeline CI/CD complet GitHub Actions (test || test -> publish).
+  - Build Docker multi-stage : images legeres et securisees.
+  - Qualite garantie : SonarCloud + JaCoCo integres dans chaque PR.
+  - Tracabilite : images taguees SHA pour rollback precis.
+  - Monitoring centralise : ELK Stack pour logs applicatifs.
+  - Documentation technique : CI_CD_PLAN.md et DORA_KPI.md.
+
+Gains observes :
+  - Lead Time Elite (~6-10 min) : feedback developpeur tres rapide.
+  - Deployment Frequency Elite (~1h) : deploiement entierement automatise.
+  - Zero secret dans le code : securite pipeline respectee.
+  - Images finales legeres (multi-stage + Alpine).
+
+Recommandations pour les prochaines iterations :
+  - Atteindre >= 70 % de couverture tests backend (actuellement 56,3 %).
+  - Activer cache Docker BuildKit en CI (reduire job publish de 40-60 %).
+  - Ajouter logs Caddy dans ELK (observabilite end-to-end).
+  - Implémenter rollback automatise (Time to Restore : Medium -> High).
+  - Tests end-to-end (Cypress / Playwright) pour descendre CFR sous 5 %.
+  - Migrer H2 -> PostgreSQL pour persistance fiable en production.
