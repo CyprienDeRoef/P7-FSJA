@@ -143,3 +143,178 @@ Avant d'utiliser le pipeline, deux valeurs doivent être renseignées :
 | `docker build --target back`                                   | Construit uniquement l'image du backend                             | `Dockerfile` (étape `back`)                   | CI/CD (`publish`), local        |
 | `docker build --target front`                                  | Construit uniquement l'image du frontend                            | `Dockerfile` (étape `front`)                  | CI/CD (`publish`), local        |
 | `docker compose up`                                            | Lance les services `front` et `back` localement                     | `docker-compose.yml`                          | Local uniquement                |
+
+---
+
+## 6. Plan de déploiement
+
+### Prérequis techniques
+
+| Prérequis | Détail |
+| --------- | ------ |
+| Docker Engine ≥ 24 | Nécessaire pour construire et exécuter les images |
+| Docker Compose v2 | Orchestration des services `front` et `back` |
+| Accès à GHCR | Token GitHub avec scope `read:packages` pour `docker pull` |
+| Port 80 disponible | Servi par Caddy (frontend Angular) |
+| Port 8080 disponible | Servi par Spring Boot (backend REST) |
+| JVM non requise sur l'hôte | Le JRE est embarqué dans l'image `back` (`eclipse-temurin:17-jre-alpine`) |
+
+### Ordre de déploiement
+
+Le déploiement suit une séquence stricte car le frontend dépend du backend pour les appels API :
+
+```
+1. (CI/CD) Tests back + tests front  ─┐
+                                       ├─ en parallèle
+2. (CI/CD) Analyse SonarCloud        ─┘
+3. (CI/CD) Build & push images Docker (front + back) vers GHCR
+4. (Serveur cible) docker compose pull   ← récupère les nouvelles images
+5. (Serveur cible) docker compose up -d  ← redémarre les conteneurs
+```
+
+Le fichier `docker-compose.yml` définit `depends_on: back` pour le service `front`, garantissant que le conteneur backend est démarré avant le frontend.
+
+### Procédure de déploiement manuel (opérateur)
+
+```bash
+# 1. Se connecter au registry si non encore authentifié
+echo $GHCR_PAT | docker login ghcr.io -u <github-user> --password-stdin
+
+# 2. Récupérer les dernières images publiées par le pipeline CI/CD
+docker compose pull
+
+# 3. Redémarrer les services en arrière-plan
+docker compose up -d
+
+# 4. Vérifier que les conteneurs sont bien démarrés
+docker compose ps
+docker compose logs --tail=50
+```
+
+### Procédure de rollback
+
+En cas de régression détectée après déploiement, le rollback consiste à pointer sur le tag SHA du dernier déploiement stable :
+
+```bash
+# Identifier le SHA du dernier déploiement stable dans l'historique GHCR ou GitHub Actions
+STABLE_SHA=<commit-sha-stable>
+
+# Récupérer les images taguées avec ce SHA
+docker pull ghcr.io/<owner>/microcrm-back:${STABLE_SHA}
+docker pull ghcr.io/<owner>/microcrm-front:${STABLE_SHA}
+
+# Redémarrer avec les images stables (surcharger les tags dans docker-compose.yml ou via env vars)
+BACK_TAG=${STABLE_SHA} FRONT_TAG=${STABLE_SHA} docker compose up -d
+```
+
+**Justification :** chaque image est taguée avec le SHA du commit (`github.sha`) en plus de `latest`, ce qui permet un rollback précis sans reconstruire. Ce mécanisme adresse directement le point d'amélioration *Time to Restore* identifié dans les KPI DORA (actuellement niveau Medium, ~15–30 min).
+
+---
+
+## 7. Plan de sauvegarde
+
+### Données et configurations à sauvegarder
+
+| Élément | Emplacement | Criticité | Raison |
+| ------- | ----------- | --------- | ------ |
+| Base de données H2 (fichier, si persistée) | Volume Docker ou `./data/` | Haute | Données métier (personnes, organisations) |
+| `application.properties` | `back/src/main/resources/` | Haute | Paramètres runtime (logs, profil Spring) |
+| `docker-compose.yml` | Racine du projet | Haute | Définition de l'infrastructure locale |
+| `Dockerfile` | Racine du projet | Haute | Reproducibilité des images |
+| `misc/docker/Caddyfile` | `misc/docker/` | Moyenne | Configuration du reverse proxy frontend |
+| `elk/logstash/pipeline/logstash.conf` | `elk/logstash/pipeline/` | Moyenne | Pipeline d'ingestion des logs ELK |
+| `elk/logstash/config/logstash.yml` | `elk/logstash/config/` | Moyenne | Configuration de l'agent Logstash |
+| Secrets CI (GitHub Secrets) | GitHub > Settings > Secrets | Haute | `SONAR_TOKEN`, `GHCR_PAT` — à documenter dans un gestionnaire de secrets hors code |
+
+> **Note sur la base de données :** dans l'état actuel, H2 fonctionne en mémoire — les données sont perdues à chaque redémarrage et aucune sauvegarde de données n'est nécessaire. Si `spring.datasource.url=jdbc:h2:file:./data/microcrm` est ajouté à `application.properties`, les données sont persistées dans un fichier et la procédure ci-dessous s'applique.
+
+### Fréquence de sauvegarde
+
+| Type | Fréquence | Déclencheur |
+| ---- | --------- | ----------- |
+| Fichier H2 (si persisté) | Quotidienne | Tâche cron (hors heures de pointe) |
+| Fichiers de configuration | À chaque modification | Commit Git (versioning natif) |
+| Secrets CI | À chaque rotation | Documentation manuelle dans un coffre (ex. Bitwarden, HashiCorp Vault) |
+
+### Méthode
+
+**Configuration et code source** : la sauvegarde est assurée nativement par **Git** (dépôt GitHub). Tout fichier versionné est sauvegardé à chaque push — aucune procédure supplémentaire n'est nécessaire pour ces fichiers.
+
+**Fichier de base de données H2 (si activé)** :
+
+```bash
+# Exemple de script de sauvegarde quotidienne du fichier H2
+cp ./data/microcrm.mv.db ./backups/microcrm-$(date +%Y%m%d).mv.db
+
+# Conservation sur 7 jours glissants
+find ./backups/ -name "microcrm-*.mv.db" -mtime +7 -delete
+```
+
+**Justification des choix :**
+- Git couvre l'essentiel des sauvegardes (code + config), sans surcharge opérationnelle.
+- La base H2 en mémoire ne requiert pas de sauvegarde dans l'état actuel du projet ; la stratégie évolue si l'application migre vers PostgreSQL.
+- Les secrets sont gérés hors dépôt (GitHub Secrets), conformément à la politique de sécurité définie en section 2.
+
+---
+
+## 8. Plan de mise à jour
+
+### Mise à jour de l'application
+
+La mise à jour suit le même flux que le déploiement initial, piloté par le pipeline CI/CD :
+
+```
+1. Développeur crée une branche feature/* ou fix/*
+2. Commit + push → pipeline CI déclenché (tests + SonarCloud)
+3. Pull Request vers main → revue de code + validation CI
+4. Merge sur main → job publish déclenché → nouvelles images taguées et poussées sur GHCR
+5. Sur le serveur : docker compose pull && docker compose up -d
+```
+
+Aucune intervention manuelle n'est requise entre l'étape 1 et l'étape 4 : le pipeline garantit qu'aucune régression n'atteint `main`.
+
+### Gestion des dépendances
+
+#### Backend (Gradle / Java)
+
+| Pratique | Détail |
+| -------- | ------ |
+| Versions fixées | Toutes les dépendances déclarées avec une version explicite dans `build.gradle` |
+| Détection des mises à jour | `./gradlew dependencyUpdates` (plugin Gradle Versions) liste les nouvelles versions disponibles |
+| Processus | Mise à jour dans une branche dédiée → PR → pipeline CI valide → merge |
+| JDK | Version fixée dans `build.gradle` (`sourceCompatibility = '17'`) et dans l'image Docker (`gradle:8.7-jdk17`) ; migrer les deux ensemble |
+
+#### Frontend (npm / Angular)
+
+| Pratique | Détail |
+| -------- | ------ |
+| Lockfile strict | `package-lock.json` versionné ; `npm ci` utilisé en CI pour une installation reproductible |
+| Mise à jour mineure | `npm update` + commit du `package-lock.json` mis à jour |
+| Mise à jour majeure Angular | `ng update @angular/core @angular/cli` en suivant le guide de migration Angular |
+| Audit de sécurité | `npm audit` à chaque mise à jour ; bloquer en CI si vulnérabilité critique (`npm audit --audit-level=critical`) |
+
+#### Images Docker de base
+
+| Image | Stratégie de mise à jour |
+| ----- | ------------------------ |
+| `node:20-alpine` | Suivre les releases LTS Node.js ; migrer vers `node:22-alpine` lors de la prochaine LTS |
+| `gradle:8.7-jdk17` | Mettre à jour en cohérence avec `sourceCompatibility` dans `build.gradle` |
+| `caddy:2-alpine` | Mettre à jour à chaque release de sécurité Caddy |
+| `eclipse-temurin:17-jre-alpine` | Synchroniser avec la version JDK du build ; patcher lors des releases de sécurité JDK |
+| `alpine:3.20` | Mettre à jour à chaque release Alpine LTS |
+
+### Bonnes pratiques
+
+1. **Ne jamais utiliser le tag `latest`** dans le `Dockerfile` : utiliser des tags de version explicites pour garantir la reproductibilité des builds.
+2. **Mettre à jour les dépendances dans une branche dédiée** : le pipeline CI valide la compatibilité avant le merge.
+3. **Activer Dependabot** sur le dépôt GitHub pour recevoir automatiquement des PR de mise à jour de sécurité.
+4. **SonarCloud comme filet de sécurité** : après chaque mise à jour majeure, l'analyse statique détecte les nouveaux problèmes de qualité éventuellement introduits.
+5. **Conserver le tag SHA** des images en production : permet un rollback immédiat vers la version précédente sans reconstruire (cf. section 6 — Plan de déploiement).
+
+### Lien avec les KPI DORA
+
+| KPI | Impact de la mise à jour |
+| --- | ------------------------ |
+| **Change Failure Rate** | Une mise à jour de dépendance non testée peut introduire une régression → toujours passer par le pipeline CI |
+| **Time to Restore** | Si une mise à jour casse la production, le tag SHA permet un rollback en < 5 min |
+| **Lead Time** | Les mises à jour mineures n'allongent pas le pipeline (cache Gradle/npm actif) |
